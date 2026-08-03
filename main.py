@@ -3,9 +3,7 @@ import datetime
 import random
 import os
 import re
-import pytesseract
-from PIL import Image
-from io import BytesIO
+import requests
 from flask import Flask
 from threading import Thread
 from telebot import types
@@ -14,11 +12,11 @@ from telebot import types
 TOKEN = '8681018267:AAGglqSnLA5BYIttAuK1ypSY24ti0sBk8jU'
 bot = telebot.TeleBot(TOKEN)
 
-# ফ্লাস্ক সার্ভার
+# ফ্লাস্ক সার্ভার (Keep-alive)
 app = Flask('')
 @app.route('/')
 def home():
-    return "AZ TEAM VIP OCR AI is Running Live!"
+    return "AZ TEAM VIP OCR AI is Running Live on Render!"
 def run():
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
 def keep_alive():
@@ -38,8 +36,7 @@ def get_user_data(user_id):
             "consecutive_losses": 0,
             "pending_period": None,
             "pending_prediction": None,
-            "status": None,
-            "timeframe": 1 # ডিফল্ট 1 Min
+            "status": None
         }
     return user_data[user_id]
 
@@ -62,7 +59,7 @@ def get_result_inline_keyboard(period):
     markup.add(types.InlineKeyboardButton("⏭️ স্কিপ করেছি", callback_data=f"RES_{period}_SKIP"))
     return markup
 
-# এআই লজিক (Anti-loss & Hunch)
+# এআই লজিক
 def analyze_market_logic(consecutive_losses):
     confidence = random.randint(75, 99)
     prediction = random.choice(["BIG", "SMALL"])
@@ -113,7 +110,7 @@ def handle_menu_texts(message):
     elif message.text == "📸 স্ক্রিনশট দিয়ে শুরু করুন":
         bot.send_message(chat_id, "📸 <b>ট্রেডিং চার্টের সর্বশেষ স্ক্রিনশটটি আপলোড করুন।</b>", parse_mode='HTML')
 
-# 📸 স্ক্রিনশট এনালাইসিস (OCR Engine) - মেইন ম্যাজিক!
+# 📸 স্ক্রিনশট এনালাইসিস (API Engine - Render Supported)
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     user_id = message.from_user.id
@@ -123,26 +120,39 @@ def handle_photo(message):
     msg = bot.reply_to(message, "🧠 <i>এআই আপনার ছবি স্ক্যান করছে... দয়া করে অপেক্ষা করুন।</i>", parse_mode='HTML')
     
     try:
-        # ছবি ডাউনলোড
+        # টেলিগ্রাম থেকে ছবি ডাউনলোড
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
-        image = Image.open(BytesIO(downloaded_file))
         
-        # ছবি থেকে টেক্সট বের করা
-        extracted_text = pytesseract.image_to_string(image)
+        # Free OCR API (OCR.Space) দিয়ে স্ক্যান করা
+        payload = {
+            'apikey': 'helloworld', # Public Free Key
+            'language': 'eng',
+            'isOverlayRequired': False
+        }
+        files = {'file': ('image.jpg', downloaded_file, 'image/jpeg')}
         
+        response = requests.post('https://api.ocr.space/parse/image', files=files, data=payload)
+        result_json = response.json()
+        
+        if result_json.get('IsErroredOnProcessing') or not result_json.get('ParsedResults'):
+            bot.edit_message_text("⚠️ <b>ছবি স্ক্যান করতে সমস্যা হয়েছে বা লেখা অস্পষ্ট।</b>\nদয়া করে একটি পরিষ্কার ছবি দিন।", chat_id, msg.message_id, parse_mode='HTML')
+            return
+            
+        extracted_text = ""
+        for res in result_json.get('ParsedResults', []):
+            extracted_text += res.get('ParsedText', '')
+            
         # ১৭-ডিজিটের পিরিয়ড নাম্বার খোঁজা (যেমন: 20260803100011389)
         periods = re.findall(r'(202\d{14})', extracted_text)
         
         if not periods:
-            bot.edit_message_text("⚠️ <b>ভুল বা ঘোলা ছবি!</b>\nআমি চার্ট থেকে ১৭-ডিজিটের পিরিয়ড নাম্বারটি পড়তে পারিনি। দয়া করে পরিষ্কার ছবি দিন।", chat_id, msg.message_id, parse_mode='HTML')
+            bot.edit_message_text("⚠️ <b>ভুল ছবি!</b>\nআমি চার্ট থেকে ১৭-ডিজিটের পিরিয়ড নাম্বারটি পড়তে পারিনি। দয়া করে পরিষ্কার ছবি দিন।", chat_id, msg.message_id, parse_mode='HTML')
             return
             
-        # সবচেয়ে বড় পিরিয়ড নাম্বারটি বের করা (যেটি একদম উপরে থাকে)
         latest_period = max(periods)
         
         # রেজাল্ট খোঁজা (Big বা Small)
-        # টেক্সটের ভেতর লেটেস্ট পিরিয়ডের আশেপাশেই Big/Small লেখা থাকবে
         result = "NONE"
         if re.search(f"{latest_period}.*?(?i)big", extracted_text.replace('\n', ' ')):
             result = "BIG"
@@ -170,12 +180,12 @@ def handle_photo(message):
         generate_signal_logic(chat_id, user_id, int(latest_period), verification_msg)
         
     except Exception as e:
-        bot.edit_message_text("⚠️ <i>ছবি স্ক্যান করতে সার্ভার সমস্যা হয়েছে। আবার চেষ্টা করুন।</i>", chat_id, msg.message_id, parse_mode='HTML')
+        print(f"Error: {e}")
+        bot.edit_message_text("⚠️ <i>সার্ভার বা API এরর হয়েছে। দয়া করে আবার চেষ্টা করুন।</i>", chat_id, msg.message_id, parse_mode='HTML')
 
-# Result Button Callback (বাটন হ্যাং প্রবলেম ফিক্সড)
+# Result Button Callback
 @bot.callback_query_handler(func=lambda call: call.data.startswith('RES_'))
 def handle_result(call):
-    # বাটন হ্যাং হওয়া বন্ধ করার কোড (Very Important!)
     bot.answer_callback_query(call.id) 
     
     parts = call.data.split('_')
@@ -186,11 +196,9 @@ def handle_result(call):
     ud = get_user_data(user_id)
     chat_id = call.message.chat.id
     
-    # বাটন মুছে দেওয়া
     bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
     
     verification_msg = ""
-    # Profit/Loss checking
     if ud["pending_period"] == period:
         if result == "SKIP":
             verification_msg = f"ℹ️ <i>পিরিয়ড {period} স্কিপ করা হয়েছে। (No Loss)</i>\n\n"
@@ -205,15 +213,12 @@ def handle_result(call):
             ud["consecutive_losses"] += 1
             verification_msg = f"❌ <b>Period {period} LOSS!</b> ⚠️\n\n"
     
-    # পরের সিগন্যাল দেওয়া (স্মার্ট লুপ)
     generate_signal_logic(chat_id, user_id, period, verification_msg)
-
 
 # Signal Generator Logic
 def generate_signal_logic(chat_id, user_id, current_period, prefix_msg=""):
     ud = get_user_data(user_id)
     
-    # সাইটের ১৭ ডিজিটের নাম্বারের সাথে ১ যোগ করে পরের নাম্বার তৈরি করা
     next_period = current_period + 1
     
     conf, pred, status, is_hunch = analyze_market_logic(ud["consecutive_losses"])
